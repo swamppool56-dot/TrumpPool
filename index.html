@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TrumpPool — Drain The Swamp</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; user-select:none; -webkit-tap-highlight-color:transparent; }
+  html,body { width:100%; height:100%; background:#0a0014; overflow:hidden;
+    font-family:'Courier New',monospace; display:flex; align-items:center; justify-content:center; }
+  #wrap { position:relative; width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; }
+  canvas { image-rendering:pixelated; image-rendering:crisp-edges; background:#000;
+    width:100%; height:100%; object-fit:contain; touch-action:none; }
+  #touchUI { position:absolute; bottom:0; left:0; width:100%; height:100%; pointer-events:none; display:none; }
+  #joy { position:absolute; left:20px; bottom:30px; width:110px; height:110px; border-radius:50%;
+    background:rgba(0,255,255,0.1); border:2px solid rgba(0,255,255,0.4); pointer-events:auto;
+    box-shadow:0 0 20px rgba(0,255,255,0.3); }
+  #joyKnob { position:absolute; left:35px; top:35px; width:40px; height:40px; border-radius:50%;
+    background:rgba(255,0,255,0.5); border:2px solid #ff00ff; box-shadow:0 0 15px #ff00ff; }
+  #hitBtn { position:absolute; right:25px; bottom:40px; width:100px; height:100px; border-radius:50%;
+    background:rgba(0,255,136,0.3); border:3px solid #00ff88; color:#fff; font-weight:bold; font-size:15px;
+    display:flex; align-items:center; justify-content:center; pointer-events:auto; text-align:center;
+    box-shadow:0 0 20px rgba(0,255,136,0.5); }
+  /* HTML-оверлей кнопок Game Over / Start — чтобы ссылки реально открывались */
+  #overlay { position:absolute; inset:0; pointer-events:none; }
+  .ovbtn { position:absolute; pointer-events:auto; cursor:pointer; border:none;
+    font-family:'Courier New',monospace; font-weight:bold; color:#000; border-radius:4px;
+    display:none; align-items:center; justify-content:center; text-decoration:none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="600" height="400"></canvas>
+  <!-- HTML-оверлей для рабочих ссылок (Twitter / Buy) -->
+  <div id="overlay">
+    <a id="btnPlay"  class="ovbtn"></a>
+    <a id="btnBuy"   class="ovbtn"></a>
+    <a id="btnFlex"  class="ovbtn"></a>
+    <a id="btnWallet" class="ovbtn"></a>
+  </div>
+  <div id="touchUI">
+    <div id="joy"><div id="joyKnob"></div></div>
+    <div id="hitBtn">SMASH</div>
+  </div>
+</div>
+<script>
+/* ============================================================
+   TRUMPPOOL — DRAIN THE SWAMP (Pump Edition)
+   15-сек раунды. Памп-график. Flex & Buy.
+   ============================================================ */
+
+/* ====== НАСТРОЙКИ ПРОЕКТА (поменяй под свой запуск) ====== */
+const CONFIG = {
+  ROUND_TIME: 15,                       // длина раунда, сек
+  TICKER: '$TRUMPPOOL',
+  BUY_URL: 'https://gmgn.ai/sol/token/YOUR_TOKEN_ADDRESS', // <-- ВСТАВЬ адрес/ссылку
+  SITE_URL: 'https://trumppool.fun',    // <-- твой домен
+  TWEET_TAGS: '#Solana #memecoin',
+};
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W=600, H=400;
+const POOL = { x:60, y:90, w:480, h:250 };
+
+/* ============================================================
+   ЗВУК — синтвейв
+   ============================================================ */
+let audioCtx=null, musicStep=0;
+function initAudio(){
+  if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ audioCtx=null; } }
+  if(audioCtx && audioCtx.state==='suspended') audioCtx.resume();
+}
+function tone(freq,dur,type='square',vol=0.18,slideTo=null,filter=null){
+  if(!audioCtx) return; vol*=1.2;
+  const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+  o.type=type; o.frequency.value=freq;
+  if(slideTo) o.frequency.linearRampToValueAtTime(slideTo,audioCtx.currentTime+dur);
+  g.gain.value=vol; g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  let node=o;
+  if(filter){ const f=audioCtx.createBiquadFilter(); f.type='lowpass'; f.frequency.value=filter; o.connect(f); f.connect(g); }
+  else o.connect(g);
+  g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+dur);
+}
+function noise(dur,vol=0.24){
+  if(!audioCtx) return; vol*=1.2;
+  const sz=Math.floor(audioCtx.sampleRate*dur);
+  const buf=audioCtx.createBuffer(1,sz,audioCtx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<sz;i++) d[i]=Math.random()*2-1;
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const g=audioCtx.createGain(); g.gain.value=vol;
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+  src.connect(g); g.connect(audioCtx.destination); src.start();
+}
+const SFX={
+  hit:   ()=>{ noise(0.04,0.18); tone(90,0.05,'square',0.2); },
+  pump:  (n)=>{ tone(500+n*40,0.08,'square',0.18,800+n*60); }, // звук растёт с комбо
+  combo: ()=>{ tone(900,0.12,'square',0.18,1400); },
+  gold:  ()=>{ tone(1200,0.12,'square',0.2,1800); tone(1600,0.1,'square',0.15); },
+  gameover:()=>{ const seq=[[523,659,784]]; seq.forEach(ch=>ch.forEach(f=>tone(f,0.4,'sawtooth',0.16,null,2200))); },
+  record:()=>{ const seq=[[523,659,784],[587,740,880],[659,830,988]];
+    seq.forEach((ch,i)=>setTimeout(()=>ch.forEach(f=>tone(f,0.25,'sawtooth',0.18,null,2400)),i*150)); },
+  go:    ()=>{ tone(200,0.15,'sawtooth',0.2,600); },
+};
+const bassNotes=[65.41,77.78,87.31,98.00];
+function playMusic(){
+  if(!audioCtx||gameState!=='play') return;
+  const beat=60/120; // чуть быстрее — энергичнее
+  const n=bassNotes[musicStep%bassNotes.length];
+  tone(n,beat*0.9,'sawtooth',0.06,null,500);
+  if(musicStep%2===0) tone(n*2,beat*0.4,'sawtooth',0.035,null,900);
+  musicStep++;
+}
+
+/* ============================================================
+   СОСТОЯНИЕ
+   ============================================================ */
+let gameState='start';
+let score=0, highScore=parseInt(localStorage.getItem('trumpPump')||'0');
+let frame=0, scoreMult=1, walletConnected=false;
+let timeLeft=CONFIG.ROUND_TIME;
+let combo=0, comboTimer=0, bestCombo=0;
+let pumpPct=0;                 // "памп" в % — растёт с очками
+let isNewRecord=false;
+
+let algae=[], particles=[], floatTexts=[], trails=[];
+let candles=[];                // мини-график пампа
+let spawnTimer=0;
+
+/* Эффекты */
+let shake={x:0,y:0,t:0,mag:0};
+let timeScale=1, slowTarget=1, slowTimer=0;
+let hitstop=0;                 // микро-фриз
+let flashWhite=0, flashGold=0, flashGreen=0, flashRed=0;
+let vhsLine=-1, vhsTimer=Math.random()*200+180;
+
+/* Звёзды */
+let stars=[];
+function initStars(){ stars=[];
+  for(let i=0;i<50;i++){ const layer=Math.floor(Math.random()*3);
+    stars.push({x:Math.random()*W, y:Math.random()*H*0.5, layer, tw:Math.random()*Math.PI*2}); } }
+initStars();
+
+/* Дождь */
+let rain=[];
+function initRain(){ rain=[]; for(let i=0;i<30;i++) rain.push({x:Math.random()*W, y:Math.random()*H, sp:2+Math.random()*3}); }
+initRain();
+
+/* Трамп */
+const trump={ x:POOL.x+POOL.w/2, y:POOL.y+POOL.h/2, size:24, speed:2.6, dir:{x:0,y:1},
+  swing:0, tieWobble:0, breath:0 };
+
+/* ============================================================
+   УПРАВЛЕНИЕ
+   ============================================================ */
+const keys={};
+window.addEventListener('keydown',e=>{
+  if(['w','a','s','d',' '].includes(e.key.toLowerCase())) e.preventDefault();
+  const k=e.key.toLowerCase(); keys[k]=true;
+  if(k===' '){ if(gameState==='play') doAttack(); else if(gameState==='start') startGame(); }
+});
+window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+
+/* Мобильный */
+const touchUI=document.getElementById('touchUI'), joy=document.getElementById('joy'),
+  joyKnob=document.getElementById('joyKnob'), hitBtn=document.getElementById('hitBtn');
+let joyVec={x:0,y:0}, joyActive=false, joyId=null;
+if('ontouchstart' in window) touchUI.style.display='block';
+function joyStart(e){ joyActive=true; joyId=e.changedTouches[0].identifier; joyMove(e); }
+function joyMove(e){ if(!joyActive) return; let t=null;
+  for(const tt of e.touches) if(tt.identifier===joyId) t=tt; if(!t) return;
+  const r=joy.getBoundingClientRect(); let dx=t.clientX-(r.left+r.width/2), dy=t.clientY-(r.top+r.height/2);
+  const len=Math.hypot(dx,dy), max=40; if(len>max){ dx=dx/len*max; dy=dy/len*max; }
+  joyKnob.style.left=(35+dx)+'px'; joyKnob.style.top=(35+dy)+'px'; joyVec={x:dx/max,y:dy/max}; }
+function joyEnd(){ joyActive=false; joyVec={x:0,y:0}; joyKnob.style.left='35px'; joyKnob.style.top='35px'; }
+joy.addEventListener('touchstart',e=>{e.preventDefault();joyStart(e);},{passive:false});
+joy.addEventListener('touchmove',e=>{e.preventDefault();joyMove(e);},{passive:false});
+joy.addEventListener('touchend',joyEnd); joy.addEventListener('touchcancel',joyEnd);
+hitBtn.addEventListener('touchstart',e=>{ e.preventDefault(); initAudio();
+  if(gameState==='play') doAttack(); else if(gameState==='start') startGame(); },{passive:false});
+
+/* Тап по canvas: на старте — старт игры */
+function handleTap(mx,my){
+  initAudio();
+  if(gameState==='start') startGame();
+}
+canvas.addEventListener('click',e=>{ const r=canvas.getBoundingClientRect();
+  const sc=Math.min(r.width/W,r.height/H); const ox=(r.width-W*sc)/2, oy=(r.height-H*sc)/2;
+  handleTap((e.clientX-r.left-ox)/sc,(e.clientY-r.top-oy)/sc); });
+canvas.addEventListener('touchstart',e=>{ if(gameState==='start'){ handleTap(); }});
+
+/* ============================================================
+   HTML-ОВЕРЛЕЙ КНОПОК (рабочие ссылки)
+   ============================================================ */
+const btnPlay=document.getElementById('btnPlay');
+const btnBuy=document.getElementById('btnBuy');
+const btnFlex=document.getElementById('btnFlex');
+const btnWallet=document.getElementById('btnWallet');
+
+function placeBtn(el, xPct, yPct, wPx, hPx, bg, label, fontPx){
+  const r=canvas.getBoundingClientRect();
+  const sc=Math.min(r.width/W,r.height/H);
+  const ox=r.left+(r.width-W*sc)/2, oy=r.top+(r.height-H*sc)/2;
+  el.style.display='flex';
+  el.style.left=(ox+xPct*sc)+'px';
+  el.style.top =(oy+yPct*sc)+'px';
+  el.style.width=(wPx*sc)+'px';
+  el.style.height=(hPx*sc)+'px';
+  el.style.background=bg;
+  el.style.fontSize=(fontPx*sc)+'px';
+  el.textContent=label;
+}
+function hideBtns(){ [btnPlay,btnBuy,btnFlex,btnWallet].forEach(b=>b.style.display='none'); }
+
+function tweetUrl(){
+  const txt = `I just drained the swamp for ${score.toLocaleString()} pts 🏊 (+${pumpPct}% PUMP)\n\nDeep State algae never stood a chance.\nApe ${CONFIG.TICKER} 🚀`;
+  const url = CONFIG.SITE_URL;
+  return 'https://twitter.com/intent/tweet?text='+encodeURIComponent(txt)+'&url='+encodeURIComponent(url)+'&hashtags='+encodeURIComponent('TrumpPool,Solana,memecoin');
+}
+
+/* Обновляем позиции/действия оверлей-кнопок каждый кадр под текущий экран */
+function syncOverlay(){
+  hideBtns();
+  if(gameState==='start'){
+    btnPlay.onclick=(e)=>{ initAudio(); startGame(); };
+    placeBtn(btnPlay, W/2-180,340,170,35,'#00ff88', (Math.floor(frame/20)%2===0?'▶ PLAY':'▶ PLAY'),16);
+    btnBuy.href=CONFIG.BUY_URL; btnBuy.target='_blank';
+    placeBtn(btnBuy, W/2+10,340,170,35,'#ffd700','BUY '+CONFIG.TICKER,12);
+  } else if(gameState==='over'){
+    btnFlex.href=tweetUrl(); btnFlex.target='_blank';
+    placeBtn(btnFlex, W/2-185,300,180,42,'#1da1f2','FLEX ON X 🐦',16);
+    btnBuy.href=CONFIG.BUY_URL; btnBuy.target='_blank';
+    placeBtn(btnBuy, W/2+5,300,180,42,'#ffd700','BUY '+CONFIG.TICKER,15);
+    btnPlay.onclick=(e)=>{ initAudio(); startGame(); };
+    placeBtn(btnPlay, W/2-90,352,180,34,'#00ff88','↻ AGAIN',16);
+  }
+}
+window.addEventListener('resize',()=>{}); // позиции пересчитываются каждый кадр
+
+/* ============================================================
+   WEB3 (опционально, не блокирует игру)
+   ============================================================ */
+async function connectWallet(){
+  try{
+    if(window.solana&&window.solana.isPhantom){ await window.solana.connect();
+      walletConnected=true; scoreMult=2; }
+    else window.open('https://phantom.app/','_blank');
+  }catch(err){}
+}
+
+/* ============================================================
+   ЭФФЕКТЫ helpers
+   ============================================================ */
+function doShake(mag,t){ shake.mag=Math.max(shake.mag,mag); shake.t=Math.max(shake.t,t); }
+function setSlow(target,timer){ slowTarget=target; slowTimer=timer; }
+
+/* ============================================================
+   СТАРТ РАУНДА
+   ============================================================ */
+function startGame(){
+  initAudio(); gameState='play';
+  score=0; pumpPct=0; frame=0; timeLeft=CONFIG.ROUND_TIME;
+  combo=0; comboTimer=0; bestCombo=0; isNewRecord=false;
+  algae=[]; particles=[]; floatTexts=[]; trails=[]; candles=[];
+  trump.x=POOL.x+POOL.w/2; trump.y=POOL.y+POOL.h/2; trump.swing=0;
+  spawnTimer=0; timeScale=1; slowTarget=1; slowTimer=0; hitstop=0;
+  flashWhite=flashGold=flashGreen=flashRed=0;
+  SFX.go();
+  // стартовый засев
+  for(let i=0;i<6;i++) spawnAlgae('green');
+  spawnAlgae('green'); spawnAlgae('green');
+}
+
+/* ============================================================
+   ВОДОРОСЛИ — упрощено: green (обычная) + gold (бонус)
+   ============================================================ */
+const ALGAE_TYPES={
+  green:{color:'#00ff88',size:18,score:10},
+  gold: {color:'#ffe600',size:14,score:50},
+};
+function spawnAlgae(type,x=null,y=null){
+  const t=ALGAE_TYPES[type];
+  if(x===null){ x=POOL.x+18+Math.random()*(POOL.w-36); y=POOL.y+18+Math.random()*(POOL.h-36); }
+  algae.push({type,x,y,size:t.size,scale:0,growing:true,removing:false,age:0,sway:Math.random()*Math.PI*2});
+}
+/* Чем меньше времени осталось — тем гуще спавн (нарастание накала) */
+function spawnInterval(){
+  const t = timeLeft/CONFIG.ROUND_TIME; // 1 -> 0
+  return 0.55*t + 0.18;                 // от ~0.73с до ~0.18с
+}
+
+/* ============================================================
+   АТАКА
+   ============================================================ */
+function doAttack(){
+  trump.swing=8;
+  const hx=trump.x+trump.dir.x*22, hy=trump.y+trump.dir.y*22, hr=24;
+  for(let i=0;i<3;i++) trails.push({x:hx,y:hy,size:(3-i)*9,life:6-i,color:'rgba(0,255,200,0.5)'});
+  let hitAny=false;
+  for(let i=algae.length-1;i>=0;i--){ const a=algae[i]; if(a.removing||a.growing&&a.scale<0.4) continue;
+    if(Math.hypot(a.x-hx,a.y-hy)<hr+a.size/2){ removeAlgae(i); hitAny=true; } }
+  if(hitAny){ SFX.hit(); hitstop=3; }
+  else { SFX.hit(); }
+}
+function removeAlgae(i){
+  const a=algae[i]; a.removing=true; a.scale=1;
+  combo++; comboTimer=70;                 // окно комбо ~1.2с
+  if(combo>bestCombo) bestCombo=combo;
+  const mult=1+Math.floor(combo/5);       // каждые 5 в комбо: +1 к множителю
+  let base=ALGAE_TYPES[a.type].score;
+  const gained=base*mult;
+  addScore(gained);
+
+  // памп-график растёт
+  pushCandle(gained);
+  pumpPct=Math.min(99999, Math.floor(score/10));
+
+  SFX.pump(Math.min(20,combo));
+  if(combo>0 && combo%5===0){ SFX.combo(); doShake(3,6); flashGreen=6; }
+  if(a.type==='gold'){ SFX.gold(); flashGold=6; doShake(4,8); }
+
+  floatTexts.push({text:'+'+gained,x:a.x,y:a.y,life:30,scale:1, big:a.type==='gold'});
+  flashAt(a.x,a.y);
+  for(let p=0;p<7;p++) particles.push({x:a.x,y:a.y,vx:Math.random()*5-2.5,vy:Math.random()*5-2.5,
+    life:22,color:a.type==='gold'?'#ffe600':(Math.random()<0.5?'#00ffaa':'#00ffff')});
+}
+function flashAt(x,y){ particles.push({x,y,vx:0,vy:0,life:3,flash:true}); }
+function addScore(v){ score+=v*scoreMult; }
+
+/* Памп-график (зелёные свечи вверх) */
+function pushCandle(val){
+  candles.push({h:Math.min(40,6+val/4), life:90});
+  if(candles.length>26) candles.shift();
+}
+
+/* ============================================================
+   UPDATE
+   ============================================================ */
+function update(){
+  if(gameState!=='play'){ frame++; return; }
+
+  // hitstop
+  if(hitstop>0){ hitstop--; frame++; return; }
+
+  timeScale+=(slowTarget-timeScale)*0.15;
+  if(slowTimer>0){ slowTimer--; if(slowTimer<=0) slowTarget=1; }
+  const dt=timeScale;
+  frame++;
+
+  // таймер раунда
+  timeLeft-=dt/60;
+  if(timeLeft<=0){ timeLeft=0; endRound(); return; }
+
+  if(frame%39===0) playMusic();
+
+  // shake decay
+  if(shake.t>0){ shake.t--; shake.x=(Math.random()*2-1)*shake.mag; shake.y=(Math.random()*2-1)*shake.mag;
+    if(shake.t<=0){ shake.x=0; shake.y=0; shake.mag=0; } }
+  flashWhite=Math.max(0,flashWhite-1); flashGold=Math.max(0,flashGold-1);
+  flashGreen=Math.max(0,flashGreen-1); flashRed=Math.max(0,flashRed-1);
+
+  // комбо decay
+  if(comboTimer>0){ comboTimer-=dt; if(comboTimer<=0) combo=0; }
+
+  // движение
+  let mx=0,my=0;
+  if(keys['w'])my-=1; if(keys['s'])my+=1; if(keys['a'])mx-=1; if(keys['d'])mx+=1;
+  if(joyActive){ mx=joyVec.x; my=joyVec.y; }
+  const len=Math.hypot(mx,my);
+  if(len>0.15){
+    mx/=Math.max(len,1); my/=Math.max(len,1);
+    let sp=trump.speed*dt;
+    trump.x+=mx*sp; trump.y+=my*sp; trump.dir={x:mx,y:my};
+    trump.x=Math.max(POOL.x+12,Math.min(POOL.x+POOL.w-12,trump.x));
+    trump.y=Math.max(POOL.y+12,Math.min(POOL.y+POOL.h-12,trump.y));
+    if(frame%4===0) particles.push({x:trump.x-mx*10,y:trump.y+8,vx:0,vy:0,life:15,color:'#00ffff',water:true});
+  }
+  if(trump.swing>0) trump.swing-=dt;
+  trump.tieWobble=Math.sin(frame*0.2); trump.breath=Math.sin(frame*0.08);
+
+  // спавн
+  spawnTimer+=dt/60;
+  if(spawnTimer>=spawnInterval()){ spawnTimer=0;
+    if(Math.random()<0.10) spawnAlgae('gold'); else spawnAlgae('green'); }
+  // не даём полю пустеть совсем
+  if(algae.length<3) spawnAlgae('green');
+
+  // водоросли
+  for(let i=algae.length-1;i>=0;i--){ const a=algae[i];
+    if(a.growing){ a.scale+=dt/12; if(a.scale>=1){a.scale=1;a.growing=false;} }
+    if(a.removing){ a.scale-=dt/8; if(a.scale<=0){ algae.splice(i,1); continue; } continue; }
+    a.age+=dt/60; a.sway+=dt*0.1; }
+
+  // candles decay
+  for(const c of candles) c.life-=dt;
+  while(candles.length && candles[0].life<=0) candles.shift();
+
+  // частицы
+  for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.life-=dt;
+    if(!p.flash&&!p.water){ p.x+=p.vx; p.y+=p.vy; p.vx*=0.92; p.vy*=0.92; }
+    if(p.life<=0) particles.splice(i,1); }
+  // тексты
+  for(let i=floatTexts.length-1;i>=0;i--){ const f=floatTexts[i]; f.life-=dt;
+    f.y-=0.9*dt; if(f.life<=0) floatTexts.splice(i,1); }
+  // шлейфы
+  for(let i=trails.length-1;i>=0;i--){ trails[i].life-=dt; if(trails[i].life<=0) trails.splice(i,1); }
+
+  // VHS
+  vhsTimer-=1; if(vhsTimer<=0){ vhsLine=Math.random()*H; vhsTimer=Math.random()*200+180; setTimeout(()=>vhsLine=-1,33); }
+}
+
+function endRound(){
+  gameState='over';
+  if(score>highScore){ highScore=score; localStorage.setItem('trumpPump',highScore); isNewRecord=true; SFX.record(); }
+  else SFX.gameover();
+  setSlow(0.4,40); flashWhite=4;
+  for(let i=0;i<24;i++) particles.push({x:W/2,y:H/2,vx:Math.random()*10-5,vy:Math.random()*10-5,
+    life:50,color:Math.random()<0.5?'#ffe600':'#00ffaa'});
+}
+
+/* ============================================================
+   ОТРИСОВКА helpers
+   ============================================================ */
+function px(x,y,w,h,c){ ctx.fillStyle=c; ctx.fillRect(Math.round(x),Math.round(y),w,h); }
+function pixText(t,x,y,size,color,align='left',glow=null){
+  ctx.font='bold '+size+'px "Courier New",monospace'; ctx.textAlign=align; ctx.textBaseline='top';
+  if(glow){ ctx.shadowColor=glow; ctx.shadowBlur=10; }
+  ctx.fillStyle=color; ctx.fillText(t,x,y);
+  ctx.shadowBlur=0; ctx.textAlign='left';
+}
+
+/* Фон */
+function drawSky(){
+  px(0,0,W,H,'#1a0033');
+  for(const s of stars){
+    const speed=[0.1,0.25,0.5][s.layer];
+    let sx=(s.x - (gameState==='play'?frame*speed:frame*speed*0.3)) % W; if(sx<0) sx+=W;
+    const tw=0.5+0.5*Math.sin(frame*0.05+s.tw);
+    ctx.globalAlpha=tw*(0.4+s.layer*0.3);
+    px(sx,s.y,s.layer+1,s.layer+1,'#ffffff'); ctx.globalAlpha=1;
+  }
+}
+function drawWater(){
+  const pulse=0.5+0.5*Math.sin(frame*0.04);
+  const g=ctx.createLinearGradient(0,POOL.y,0,POOL.y+POOL.h);
+  g.addColorStop(0,'#00ffee'); g.addColorStop(0.5, pulse>0.5?'#0099ee':'#0066dd');
+  g.addColorStop(1,'#cc00ff');
+  ctx.fillStyle=g; ctx.fillRect(POOL.x,POOL.y,POOL.w,POOL.h);
+  for(let i=0;i<POOL.w;i+=18){ const wob=Math.sin(frame*0.05+i*0.1)*3;
+    px(POOL.x+i,POOL.y+40+wob,11,2,'rgba(0,255,255,0.3)');
+    px(POOL.x+i,POOL.y+130+wob,11,2,'rgba(255,0,255,0.2)');
+    px(POOL.x+i,POOL.y+210+wob,11,2,'rgba(0,255,255,0.25)'); }
+}
+const TILE=20;
+function drawPoolFrame(){
+  px(POOL.x-TILE,POOL.y-TILE+3,POOL.w+TILE*2,TILE,'#ff88aa');
+  px(POOL.x-TILE,POOL.y+POOL.h+3,POOL.w+TILE*2,TILE,'#ff88aa');
+  px(POOL.x-TILE+3,POOL.y,TILE,POOL.h,'#ff88aa');
+  px(POOL.x+POOL.w+3,POOL.y,TILE,POOL.h,'#ff88aa');
+  px(POOL.x-TILE,POOL.y-TILE,POOL.w+TILE*2,TILE,'#ffffff');
+  px(POOL.x-TILE,POOL.y+POOL.h,POOL.w+TILE*2,TILE,'#ffffff');
+  px(POOL.x-TILE,POOL.y,TILE,POOL.h,'#ffffff');
+  px(POOL.x+POOL.w,POOL.y,TILE,POOL.h,'#ffffff');
+}
+function drawPalm(x,y,scale){
+  px(x-2*scale,y,4*scale,20*scale,'#2a0a4a');
+  ctx.fillStyle='#39ff14';
+  for(let a=0;a<6;a++){ const ang=(a/6)*Math.PI*2;
+    const lx=x+Math.cos(ang)*10*scale, ly=y-Math.sin(ang)*6*scale;
+    ctx.fillRect(Math.round(lx-3*scale),Math.round(ly-2*scale),6*scale,4*scale); }
+  ctx.shadowColor='#39ff14'; ctx.shadowBlur=8;
+  ctx.fillRect(Math.round(x-4*scale),Math.round(y-4*scale),8*scale,8*scale); ctx.shadowBlur=0;
+}
+function drawBuilding(){
+  px(POOL.x-TILE,POOL.y-TILE-40,POOL.w+TILE*2,40,'#2a0a4a');
+  const bx=POOL.x+POOL.w/2, by=POOL.y-TILE-38;
+  for(let i=0;i<4;i++) px(bx-30+i*16,by+8,4,30,'#ffffff');
+  ctx.fillStyle='#cc66ff'; ctx.beginPath();
+  ctx.moveTo(bx-32,by+8); ctx.lineTo(bx+32,by+8); ctx.lineTo(bx,by-12); ctx.closePath(); ctx.fill();
+  pixText('SWAMP',bx,by,5,'#1a0033','center');
+  ctx.fillStyle='#cc66ff'; ctx.beginPath(); ctx.arc(bx,by-12,12,Math.PI,0); ctx.fill();
+  px(bx-4,by-30,8,6,'#ff0044');
+  px(bx-4,by-30,8,1,'#ff0044'); px(bx-4,by-28,8,1,'#fff'); px(bx-4,by-26,8,1,'#ff0044');
+  px(bx-4,by-30,4,3,'#000080');
+}
+function drawPalmsAndLamps(){
+  const palms=[[POOL.x-35,POOL.y-30,1.2],[POOL.x+POOL.w+35,POOL.y-30,1.1],
+    [POOL.x-40,POOL.y+POOL.h-20,1.4],[POOL.x+POOL.w+40,POOL.y+POOL.h-20,1.3],
+    [POOL.x+80,POOL.y-55,0.9],[POOL.x+POOL.w-80,POOL.y-55,1.0]];
+  for(const p of palms) drawPalm(p[0],p[1],p[2]);
+  const lamps=[[POOL.x+60,POOL.y-TILE-6],[POOL.x+POOL.w/2,POOL.y-TILE-6],[POOL.x+POOL.w-60,POOL.y-TILE-6],
+    [POOL.x+60,POOL.y+POOL.h+TILE+2],[POOL.x+POOL.w-60,POOL.y+POOL.h+TILE+2]];
+  for(const l of lamps){ const glow=0.5+0.5*Math.sin(frame*0.1+l[0]);
+    ctx.globalAlpha=glow; ctx.shadowColor='#ffdd00'; ctx.shadowBlur=8;
+    px(l[0]-2,l[1]-2,4,4,'#ffdd00'); ctx.shadowBlur=0; ctx.globalAlpha=1; }
+}
+function drawAlgae(){
+  for(const a of algae){ const s=a.size*a.scale; if(s<=0) continue;
+    let col=ALGAE_TYPES[a.type].color;
+    if(a.type==='gold') col=Math.floor(frame/6)%2===0?'#ffe600':'#ffff99';
+    const swayX=Math.sin(a.sway)*2;
+    ctx.shadowColor=col; ctx.shadowBlur=8;
+    ctx.fillStyle=col; ctx.fillRect(a.x-s/2+swayX,a.y-s/2,s,s); ctx.shadowBlur=0;
+    const n=4; ctx.fillStyle=col;
+    for(let k=0;k<n;k++) ctx.fillRect(a.x-s/2+(k/n)*s+swayX,a.y-s/2-3,2,4);
+    if(a.type==='gold'){ pixText('$',a.x,a.y-5,10,'#7a4', 'center'); }
+  }
+}
+function drawTrump(){
+  const t=trump;
+  px(t.x-10,t.y+10,20,4,'rgba(0,0,0,0.3)');
+  px(t.x-10,t.y-2,20,14,'#000044');
+  px(t.x-1+t.tieWobble,t.y,2,8,'#ff0044');
+  px(t.x-7,t.y-10,14,10,'#ffcc99');
+  px(t.x-5,t.y-13,10,4,'#ffd700');
+  px(t.x-4,t.y-7,2,2,'#000'); px(t.x+2,t.y-7,2,2,'#000');
+  px(t.x-3,t.y-3,6,1,'#cc6600');
+  const reach=16+(t.swing>0?7:0);
+  const sx=t.x+t.dir.x*reach, sy=t.y+t.dir.y*reach;
+  ctx.strokeStyle='#888888'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(t.x,t.y); ctx.lineTo(sx,sy); ctx.stroke();
+  ctx.shadowColor='#00ffaa'; ctx.shadowBlur=6;
+  px(sx-3,sy-3,6,4,'#ffffff'); ctx.shadowBlur=0;
+  if(t.swing>3){ ctx.strokeStyle='rgba(0,255,200,0.7)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(t.x,t.y,reach,0,Math.PI*2); ctx.stroke(); }
+}
+function drawEntities(){
+  for(const tr of trails){ ctx.globalAlpha=tr.life/6;
+    px(tr.x-tr.size/2,tr.y-tr.size/2,tr.size,tr.size,tr.color); ctx.globalAlpha=1; }
+  for(const p of particles){
+    if(p.flash){ ctx.globalAlpha=p.life/3; ctx.fillStyle='#ffffff';
+      ctx.beginPath(); ctx.arc(p.x,p.y,18*(p.life/3),0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; }
+    else if(p.water){ ctx.globalAlpha=p.life/15; px(p.x-1,p.y-1,3,3,p.color); ctx.globalAlpha=1; }
+    else { ctx.shadowColor=p.color; ctx.shadowBlur=5; px(p.x-2,p.y-2,4,4,p.color); ctx.shadowBlur=0; } }
+  for(const f of floatTexts){ ctx.globalAlpha=Math.min(1,f.life/15);
+    pixText(f.text,f.x,f.y,f.big?20:14,f.big?'#ffe600':'#fff','center',f.big?'#ffe600':null); ctx.globalAlpha=1; }
+}
+
+/* ============================================================
+   ПАМП-ГРАФИК (главный buy-trigger)
+   ============================================================ */
+function drawPumpChart(){
+  const cx=W-118, cy=46, cw=110, ch=62;
+  px(cx-2,cy-2,cw+4,ch+4,'rgba(0,0,0,0.55)');
+  ctx.strokeStyle='#00ff88'; ctx.lineWidth=1; ctx.strokeRect(cx,cy,cw,ch);
+  pixText('$TRUMPPOOL',cx+4,cy+3,8,'#00ff88');
+  // свечи
+  const bw=4, gap=0;
+  let x=cx+4;
+  const baseY=cy+ch-4;
+  for(let i=0;i<candles.length;i++){ const c=candles[i];
+    const h=Math.max(2,c.h);
+    ctx.fillStyle='#00ff88';
+    ctx.fillRect(Math.round(x), Math.round(baseY-h), bw, h);
+    x+=bw+gap; if(x>cx+cw-4) break;
+  }
+  // памп %
+  const blink=combo>=10?(Math.floor(frame/6)%2===0):true;
+  ctx.globalAlpha=blink?1:0.6;
+  pixText('+'+pumpPct+'%',cx+cw-4,cy+ch-13,12,'#00ff88','right','#00ff88');
+  ctx.globalAlpha=1;
+  if(combo>=10) pixText('🚀',cx+cw-4,cy+2,11,'#fff','right');
+}
+
+/* UI игры */
+function drawUI(){
+  // время
+  const tcol = timeLeft<=5 ? (Math.floor(frame/8)%2===0?'#ff0044':'#ff99aa') : '#fff';
+  pixText('TIME '+Math.ceil(timeLeft),W/2,6,20,tcol,'center',timeLeft<=5?'#ff0044':null);
+  // таймбар
+  px(W/2-100,30,200,5,'#400');
+  px(W/2-100,30,200*(timeLeft/CONFIG.ROUND_TIME),5,timeLeft<=5?'#ff0044':'#00ffff');
+  // score
+  pixText('SCORE '+score,8,6,14,'#ffe600','left','#ffe600');
+  if(scoreMult>1) pixText('HOLDER 2X',8,24,9,'#ffe600','left','#ffe600');
+  // combo
+  if(combo>=2){ const mult=1+Math.floor(combo/5);
+    const ccol=combo>=15?'#ff00ff':(combo>=10?'#ffe600':'#00ff88');
+    const big=14+Math.min(14,combo);
+    pixText('COMBO x'+mult,8,H-30,big,ccol,'left',ccol);
+    pixText(combo+' HITS',8,H-46,10,'#fff','left'); }
+  drawPumpChart();
+}
+
+/* Постэффекты */
+function drawRain(){
+  ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1;
+  for(const r of rain){ ctx.beginPath(); ctx.moveTo(r.x,r.y); ctx.lineTo(r.x-1,r.y+3); ctx.stroke();
+    r.y+=r.sp; r.x+=r.sp*0.27; if(r.y>H){ r.y=-3; r.x=Math.random()*W; } }
+}
+function drawPostFX(){
+  drawRain();
+  if(vhsLine>=0){ px(0,vhsLine,W,2,'rgba(255,255,255,0.6)'); }
+  for(let i=0;i<5;i++) px(Math.random()*W,Math.random()*H,1,1,'rgba(255,255,255,0.3)');
+  if(flashWhite>0){ ctx.globalAlpha=flashWhite/5; px(0,0,W,H,'#ffffff'); ctx.globalAlpha=1; }
+  if(flashGold>0){ ctx.globalAlpha=0.2*(flashGold/6); px(0,0,W,H,'#ffe600'); ctx.globalAlpha=1; }
+  if(flashGreen>0){ ctx.globalAlpha=0.18*(flashGreen/6); px(0,0,W,H,'#00ff88'); ctx.globalAlpha=1; }
+  if(flashRed>0){ ctx.globalAlpha=flashRed/10*0.5; px(0,0,W,H,'#ff0044'); ctx.globalAlpha=1; }
+  const vg=ctx.createRadialGradient(W/2,H/2,80,W/2,H/2,W/1.5);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.4)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+  if(timeLeft<=5&&gameState==='play'&&Math.floor(frame/8)%2===0){
+    ctx.strokeStyle='#ff0044'; ctx.lineWidth=4; ctx.strokeRect(2,2,W-4,H-4); }
+}
+
+/* ============================================================
+   СТАРТОВЫЙ ЭКРАН
+   ============================================================ */
+function drawBigTrump(x,y){
+  const breath=Math.sin(frame*0.06)*2;
+  const tie=Math.sin(frame*0.15)*3;
+  ctx.globalAlpha=0.3; px(x-30,y+58,60,8,'#000'); ctx.globalAlpha=1;
+  px(x-22,y+20,18,40,'#000044'); px(x+4,y+20,18,40,'#000044');
+  px(x-30,y-30+breath,60,55,'#000044');
+  px(x-4,y-25+breath,8,40,'#ff0044');
+  ctx.shadowColor='#ff0044'; ctx.shadowBlur=10;
+  px(x-4+tie,y+10,8,8,'#ff0044'); ctx.shadowBlur=0;
+  px(x-44,y-10+breath,16,12,'#000044'); px(x-44,y+2,8,20,'#000044');
+  px(x+28,y-15+breath,14,40,'#000044');
+  ctx.strokeStyle='#888'; ctx.lineWidth=4;
+  ctx.beginPath(); ctx.moveTo(x+40,y+20); ctx.lineTo(x+70,y-40); ctx.stroke();
+  ctx.shadowColor='#fff'; ctx.shadowBlur=8;
+  px(x+62,y-50,18,14,'#ffffff'); ctx.shadowBlur=0;
+  px(x-24,y-72+breath,48,42,'#ffcc99');
+  ctx.shadowColor='#ffd700'; ctx.shadowBlur=10;
+  px(x-26,y-80+breath,52,14,'#ffd700'); ctx.shadowBlur=0;
+  px(x+18,y-78+breath,12,8,'#ffd700');
+  px(x-14,y-58+breath,6,6,'#000'); px(x+8,y-58+breath,6,6,'#000');
+  px(x-10,y-44+breath,20,3,'#cc4422');
+}
+function drawStart(){
+  drawSky(); drawBuilding(); drawPalmsAndLamps(); drawWater(); drawPoolFrame();
+  for(let i=0;i<6;i++){ const ax=POOL.x+40+i*70, ay=POOL.y+POOL.h-40+Math.sin(i+frame*0.02)*16;
+    ctx.shadowColor='#00ff88'; ctx.shadowBlur=6; px(ax,ay,14,14,'#00ff88'); ctx.shadowBlur=0; }
+  px(0,0,W,H,'rgba(26,0,51,0.4)');
+  drawBigTrump(150,250);
+  // заголовок
+  ctx.font='bold 46px "Courier New",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.lineWidth=4; ctx.strokeStyle='#000'; ctx.strokeText('TRUMPPOOL',W/2,48);
+  ctx.shadowColor='#ffd700'; ctx.shadowBlur=20; ctx.fillStyle='#ffd700';
+  ctx.fillText('TRUMPPOOL',W/2,48); ctx.shadowBlur=0; ctx.textBaseline='top';
+  if(Math.floor(frame/25)%2===0)
+    pixText('15 SECONDS TO DRAIN THE SWAMP',W/2,80,13,'#00ffaa','center','#00ffaa');
+
+  // панель "как играть" — короткая
+  const px0=330,py0=110,pw=255,ph=120;
+  px(px0,py0,pw,ph,'rgba(10,0,30,0.85)');
+  ctx.strokeStyle='#ff00ff'; ctx.lineWidth=2; ctx.shadowColor='#ff00ff'; ctx.shadowBlur=8;
+  ctx.strokeRect(px0,py0,pw,ph); ctx.shadowBlur=0;
+  const lines=['🏊 MOVE: WASD / JOYSTICK','💥 SMASH: SPACE / BUTTON',
+    '🔥 CHAIN HITS = COMBO x','💰 GOLD ALGAE = BIG PUMP','👑 HOLD $TRUMPPOOL = 2X SCORE'];
+  lines.forEach((l,i)=> pixText(l,px0+10,py0+12+i*21,11,'#00ffff'));
+
+  // призыв-флекс
+  if(highScore>0) pixText('YOUR BEST: '+highScore,W/2,300,13,'#ffe600','center','#ffe600');
+  pixText('SCREENSHOT YOUR PUMP. APE THE SWAMP.',W/2,322,10,'#fff','center');
+
+  // кнопки рисуем как "плашки" под HTML-кнопки
+  const sb=Math.floor(frame/20)%2===0;
+  px(W/2-180,340,170,35, sb?'#00ff88':'#00cc66');
+  ctx.strokeStyle='#00ff88'; ctx.lineWidth=2; ctx.strokeRect(W/2-180,340,170,35);
+  px(W/2+10,340,170,35,'#ffd700');
+
+  // CLASSIFIED
+  ctx.save(); ctx.translate(W-45,H-42); ctx.rotate(-0.3);
+  ctx.strokeStyle='#ff0044'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,26,0,Math.PI*2); ctx.stroke();
+  pixText('CLASSIFIED',0,-5,8,'#ff0044','center'); ctx.restore();
+
+  drawPostFX();
+}
+
+/* ============================================================
+   GAME OVER — памп + флекс + buy
+   ============================================================ */
+function drawOver(){
+  drawSky(); drawBuilding(); drawPalmsAndLamps(); drawWater(); drawPoolFrame();
+  px(0,0,W,H,'rgba(0,20,10,0.55)');
+
+  // заголовок
+  ctx.font='bold 36px "Courier New",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.lineWidth=4; ctx.strokeStyle='#000';
+  const title = isNewRecord ? 'NEW HIGH PUMP!' : 'TIME!';
+  ctx.strokeText(title,W/2,55);
+  ctx.shadowColor=isNewRecord?'#ffe600':'#00ffaa'; ctx.shadowBlur=18;
+  ctx.fillStyle=isNewRecord?'#ffe600':'#00ffaa';
+  ctx.fillText(title,W/2,55); ctx.shadowBlur=0; ctx.textBaseline='top';
+
+  // большой памп-результат
+  pixText('YOUR PUMP',W/2,95,14,'#fff','center');
+  ctx.font='bold 52px "Courier New",monospace'; ctx.textAlign='center';
+  ctx.shadowColor='#00ff88'; ctx.shadowBlur=20; ctx.fillStyle='#00ff88';
+  ctx.fillText('+'+pumpPct+'%',W/2,150); ctx.shadowBlur=0; ctx.textAlign='left';
+
+  pixText('SCORE: '+score,W/2,200,18,'#ffe600','center','#ffe600');
+  pixText('BEST COMBO: x'+(1+Math.floor(bestCombo/5))+'  ('+bestCombo+' hits)',W/2,228,12,'#fff','center');
+  pixText('HIGH: '+highScore,W/2,250,12,'#ffe600','center');
+
+  // плашки под HTML-кнопки (Flex / Buy / Again)
+  px(W/2-185,300,180,42,'#1da1f2');
+  px(W/2+5,300,180,42,'#ffd700');
+  px(W/2-90,352,180,34,'#00ff88');
+
+  drawPostFX();
+}
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+function render(){
+  ctx.clearRect(0,0,W,H);
+  if(gameState==='start'){ drawStart(); }
+  else if(gameState==='over'){ drawOver(); }
+  else {
+    ctx.save();
+    ctx.translate(shake.x,shake.y);
+    drawSky(); drawBuilding(); drawPalmsAndLamps(); drawWater(); drawPoolFrame();
+    drawAlgae(); drawEntities(); drawTrump();
+    ctx.restore();
+    drawUI(); drawPostFX();
+  }
+  syncOverlay();
+}
+
+/* ============================================================
+   ЦИКЛ 60 FPS
+   ============================================================ */
+let lastTime=0, acc=0; const STEP=1000/60;
+function loop(ts){
+  if(!lastTime) lastTime=ts;
+  acc+=ts-lastTime; lastTime=ts;
+  let steps=0;
+  while(acc>=STEP&&steps<5){ update(); acc-=STEP; steps++; }
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* CONNECT WALLET через HTML-кнопку на старте (правый верх) */
+/* Добавляем маленькую кнопку wallet поверх плашки */
+(function setupWalletBtn(){
+  btnWallet.textContent=''; // используем btnBuy на старте как BUY, wallet вешаем на правую плашку через клик canvas? 
+})();
+/* Клик по правой START-плашке = wallet (т.к. BUY уже на оверлее btnBuy).
+   Но чтобы не плодить — сделаем connect по двойному назначению:
+   правая плашка на старте = CONNECT WALLET, BUY вынесем отдельной кнопкой ниже. */
+
+/* Solana web3 (опционально) */
+(function(){ const s=document.createElement('script');
+  s.src='https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js';
+  s.async=true; document.head.appendChild(s); })();
+</script>
+</body>
+</html>
